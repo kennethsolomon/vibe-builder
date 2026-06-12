@@ -163,7 +163,7 @@ export default function Workspace({ initialProject, initialInterview, onProjectU
               <p className="text-sm text-zinc-400 mb-3">
                 Let's tailor your {interview.label.toLowerCase()} site.
               </p>
-              <Interview interview={interview} onComplete={onInterviewComplete} />
+              <Interview interview={interview} projectId={project.id} onComplete={onInterviewComplete} />
             </div>
           )}
 

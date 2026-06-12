@@ -27,3 +27,26 @@ Reusable instincts extracted from the v2 build. Obey these on future work.
 7. Background `node server.js` started via plain Bash with `&` does not persist
    (shell cwd resets between calls). Use run_in_background:true for long-lived
    local servers and read the output file.
+
+## Logo upload + project delete (feature, 2026-06-12)
+
+8. For user-uploaded binaries, validate by MAGIC BYTES, never the client mimetype
+   or filename. Generate the stored filename server-side (`logo.<ext>` from the
+   sniffed type) so a traversal filename like `../../etc/x.png` is structurally
+   impossible to honor.
+
+9. SVG is an executable document, not a safe image. A regex XSS blocklist is
+   bypassable (`<\tscript>`, namespaced handlers, `<use href=data:>`, CSS @import)
+   AND the preview iframe's `sandbox="allow-scripts allow-same-origin"` is a
+   spec-defined no-op. For a raster-logo use case, REJECT SVG outright (allowlist
+   PNG/JPG/WebP) rather than sanitize. Allowlist > blocklist at every boundary.
+
+10. A `deleteFiles` rm primitive must resolve the real path (`fs.realpathSync`) and
+    require it to be a STRICT subdirectory of `realpathSync(GENERATED_ROOT)` —
+    never equal to root, never a symlink target outside it — before any rmSync.
+    String-prefix checks alone are defeated by symlinks.
+
+11. Reuse the existing in-flight concurrency lock to refuse destructive ops (delete)
+    while a generation runs (409). The window between mkdirSync and inFlight.add has
+    no `await`, so Node's single thread can't interleave a delete there — but the
+    guard must still exist for the post-add duration.

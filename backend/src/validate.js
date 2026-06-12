@@ -135,6 +135,63 @@ export function normalizeStack(value) {
   return null;
 }
 
+/** Hard cap on uploaded logo size (also enforced by multipart limits). */
+export const LOGO_MAX_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Validate an uploaded logo by its ACTUAL bytes (magic-byte sniffing), not the
+ * client-declared mimetype or extension — both are attacker-controlled.
+ *
+ * SVG is REJECTED outright. An SVG is an executable document: served as a
+ * top-level page (or embedded as anything other than `<img>`) it runs scripts
+ * in the preview origin. A finite regex blocklist cannot reliably catch every
+ * vector (`<\tscript>`, namespaced event attrs, `<use href="data:">`, CSS
+ * `@import`, …), so the only safe stance for a raster-logo use case is to not
+ * accept the format at all. PNG/JPG/WebP cover real logos.
+ *
+ * This is the ONLY path by which a user-supplied binary is persisted into a
+ * generated project dir, so the type decision is made here at the boundary.
+ *
+ * @param {Buffer} buffer  the full file bytes
+ * @returns {{ ext: "png"|"jpg"|"webp", mime: string }}
+ */
+export function validateLogoUpload(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    throw new ValidationError("Empty upload");
+  }
+  if (buffer.length > LOGO_MAX_BYTES) {
+    throw new ValidationError("Logo exceeds 5MB limit");
+  }
+
+  // PNG: 89 50 4E 47
+  if (buffer.length >= 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+    return { ext: "png", mime: "image/png" };
+  }
+  // JPEG: FF D8 FF
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return { ext: "jpg", mime: "image/jpeg" };
+  }
+  // WebP: bytes 0-3 "RIFF" (52 49 46 46) and bytes 8-11 "WEBP" (57 45 42 50)
+  if (
+    buffer.length >= 12 &&
+    buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
+    buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50
+  ) {
+    return { ext: "webp", mime: "image/webp" };
+  }
+
+  // SVG is an executable document, not a safe raster image — reject it with a
+  // clear message rather than letting a forged extension fall through.
+  let head = buffer.toString("utf8", 0, 256);
+  if (head.charCodeAt(0) === 0xfeff) head = head.slice(1); // strip UTF-8 BOM
+  head = head.replace(/^\s+/, "").toLowerCase();
+  if (head.startsWith("<?xml") || head.startsWith("<svg")) {
+    throw new ValidationError("SVG logos are not supported — use PNG, JPG, or WebP");
+  }
+
+  throw new ValidationError("Unsupported file type — only PNG, JPG, WebP are allowed");
+}
+
 export class ValidationError extends Error {
   constructor(message) {
     super(message);

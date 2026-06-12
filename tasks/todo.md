@@ -1,3 +1,32 @@
+# Vibe Builder — Logo Binary Upload (last open v1 item)
+
+## Goal
+Wire the interview's "I'll upload a logo" option end to end. Today only the text-wordmark fallback works; uploads are not persisted, served, or referenced by generation. Store uploads under `generated/<slug>/assets/logo.<ext>` (already served by @fastify/static), validate by magic bytes (not just mimetype), reject XSS-bearing SVGs, persist the relative path to a new `logo_path` column, and reference it in both static + app prompts.
+
+## Ordered tasks
+1. [x] Install `@fastify/multipart` (^10, Fastify-5 compatible). Register on the app.
+2. [x] DB: add `logo_path TEXT` column in all FOUR spots (CREATE TABLE, migration loop, insert stmt, update stmt). New projects insert null.
+3. [x] `validate.js`: add `validateLogoUpload(buffer, declaredMime)` — magic-byte sniff (PNG/JPEG/WebP/SVG), 5MB cap, SVG XSS rejection. Returns `{ ext }`. Boundary validation style.
+4. [x] `server.js`: `POST /api/projects/:id/logo` (multipart) + `DELETE /api/projects/:id/logo`. Reuse `projectDir(slug)`; server-generated filename `logo.<ext>`; delete stale logo.* of other ext; persist `logo_path`; return `{ logo_path, previewUrl }`. insertProject call sets `logo_path: null`.
+5. [x] `prompt.js`: rewrite logo lines in static + app prompts to reference `project.logo_path` (not loose `answers.logo`). Wordmark fallback when null.
+6. [x] Frontend: `api.js` `uploadLogo`/`deleteLogo`; `Interview.jsx` upload UI (file input + dropzone + thumbnail + Replace/Remove); thread `projectId` from `Workspace.jsx`.
+7. [x] Verify end to end (real PNG upload, attack tests, real haiku gen referencing the logo, regression for placeholder).
+8. [x] SECURITY (Vex HOLD→SHIP): SVG rejected outright (allowlist PNG/JPG/WebP) — blocklist was bypassable + preview iframe sandbox is a no-op.
+
+# Vibe Builder — Project Delete (2026-06-12, new feature) — DONE
+- [x] db.deleteProject(id) prepared stmt.
+- [x] DELETE /api/projects/:id { deleteFiles } — realpath/symlink-escape guard, slug re-validation, 409 while in-flight.
+- [x] Sidebar hover trash icon + confirm modal: "Remove from list only" / "Delete files too" (red) / Cancel.
+- [x] App.jsx: deleting the open project returns to new-site state; list refreshes.
+- [x] Verified: list-only keeps files, delete-files removes folder+record, symlink escape refused 400, delete-during-gen 409.
+- [x] README updated (logo upload + project deletion).
+
+## Acceptance criteria
+- Valid PNG/JPEG/WebP/SVG upload → 200 + `logo_path` + file on disk + served at `/preview/<slug>/assets/logo.<ext>`.
+- Attack tests ALL rejected 4xx: script-bearing SVG, forged-extension (PNG ext / SVG bytes), >5MB, `../` in multipart filename ignored.
+- Real static gen references `assets/logo.<ext>` in index.html when a logo is set; wordmark fallback when not.
+- No regression: static/app/palette/model/concurrency/SSE intact. No traversal possible.
+
 # Vibe Builder v2 — Plan
 
 ## Goal

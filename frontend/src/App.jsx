@@ -44,6 +44,19 @@ export default function App() {
     setView("new");
   }, []);
 
+  const handleDelete = useCallback(async (id, deleteFiles) => {
+    await api.deleteProject(id, deleteFiles);
+    // If the deleted project was the open one, fall back to the new-site view.
+    setActive((cur) => {
+      if (cur?.project?.id === id) {
+        setView("new");
+        return null;
+      }
+      return cur;
+    });
+    await refreshProjects();
+  }, [refreshProjects]);
+
   return (
     <div className="flex h-full">
       <Sidebar
@@ -51,6 +64,7 @@ export default function App() {
         activeId={active?.project?.id}
         onSelect={openProject}
         onNew={startNew}
+        onDelete={handleDelete}
       />
       <main className="flex-1 min-w-0 flex flex-col">
         {error && (

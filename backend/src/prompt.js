@@ -148,8 +148,8 @@ function buildStaticGenerationPrompt(project, answers = {}) {
   if (answers.references) {
     lines.push(`- Reference/inspiration the user pasted (match the FEEL, do not copy): ${answers.references}`);
   }
-  if (answers.logo && answers.logo !== "placeholder") {
-    lines.push(`- Logo: the user provided a logo at ./assets/logo (reference it as <img src="assets/logo...">). If unsure of extension, use a text wordmark fallback.`);
+  if (project.logo_path) {
+    lines.push(`- Logo: the user uploaded a logo at "${project.logo_path}". Reference it with <img src="${project.logo_path}" alt="${project.name} logo">. Do NOT invent a wordmark.`);
   } else {
     lines.push(`- Logo: none provided — design a clean text wordmark from the project name.`);
   }
@@ -199,6 +199,11 @@ function buildAppGenerationPrompt(project, answers = {}) {
   if (answers.features) lines.push(`- Functional requirements: ${answers.features}`);
   if (answers.references) {
     lines.push(`- Reference/inspiration (match the FEEL, do not copy): ${answers.references}`);
+  }
+  if (project.logo_path) {
+    lines.push(`- Logo: the user uploaded a logo at "${project.logo_path}" (relative to this directory). Reference it as <img src="${project.logo_path}" alt="${project.name} logo"> and copy/move "${project.logo_path}" into the app's public/static asset directory as the stack requires (e.g. Laravel public/, Next.js public/). Do NOT invent a wordmark.`);
+  } else {
+    lines.push(`- Logo: none provided — design a clean text wordmark from the project name.`);
   }
 
   lines.push("");

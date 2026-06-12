@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { uploadLogo, api } from "../api.js";
 
 const HEX_RE = /^#?([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$/;
+const LOGO_ACCEPT = "image/png,image/jpeg,image/webp";
 
 /**
  * Guided multi-question interview. Walks through interview.questions one at a
@@ -11,7 +13,7 @@ const HEX_RE = /^#?([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$/;
  * passed through as `answers.customPalette` (an array of hex strings); the
  * backend validates and injects it verbatim as the authoritative color system.
  */
-export default function Interview({ interview, onComplete }) {
+export default function Interview({ interview, projectId, onComplete }) {
   const questions = interview?.questions ?? [];
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState({});
@@ -19,6 +21,12 @@ export default function Interview({ interview, onComplete }) {
   const [customMode, setCustomMode] = useState(false);
   const [swatches, setSwatches] = useState(["#1a1a2e", "#c9a227", "#f5f1e8"]);
   const [paletteText, setPaletteText] = useState("");
+  const [logoMode, setLogoMode] = useState(false); // logo step: showing the upload UI
+  const [logoPreview, setLogoPreview] = useState(null); // preview URL after upload
+  const [logoBusy, setLogoBusy] = useState(false);
+  const [logoError, setLogoError] = useState("");
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef(null);
 
   const q = questions[step];
   if (!q) return null;
@@ -29,10 +37,39 @@ export default function Interview({ interview, onComplete }) {
     setAnswers(next);
     setDraft("");
     setCustomMode(false);
+    setLogoMode(false);
     if (step + 1 >= total) {
       onComplete(next);
     } else {
       setStep(step + 1);
+    }
+  }
+
+  async function handleLogoFile(file) {
+    if (!file || !projectId) return;
+    setLogoError("");
+    setLogoBusy(true);
+    try {
+      const { previewUrl } = await uploadLogo(projectId, file);
+      // Cache-bust so a Replace re-render shows the new image (same logical URL).
+      setLogoPreview(`${previewUrl}?t=${Date.now()}`);
+    } catch (err) {
+      setLogoError(err.message);
+    } finally {
+      setLogoBusy(false);
+    }
+  }
+
+  async function removeLogo() {
+    setLogoError("");
+    setLogoBusy(true);
+    try {
+      if (projectId) await api.deleteLogo(projectId);
+      setLogoPreview(null);
+    } catch (err) {
+      setLogoError(err.message);
+    } finally {
+      setLogoBusy(false);
     }
   }
 
@@ -65,6 +102,8 @@ export default function Interview({ interview, onComplete }) {
   }
 
   const isPaletteStep = q.id === "palette";
+  const isLogoStep = q.id === "logo";
+  const UPLOAD_OPTION = "I'll upload a logo";
 
   return (
     <div className="space-y-4">
@@ -82,12 +121,15 @@ export default function Interview({ interview, onComplete }) {
 
       <p className="text-zinc-100">{q.prompt}</p>
 
-      {q.type === "choice" && !customMode && (
+      {q.type === "choice" && !customMode && !logoMode && (
         <div className="space-y-2">
           {q.options.map((opt) => (
             <button
               key={opt}
-              onClick={() => commit(opt)}
+              onClick={() => {
+                if (isLogoStep && opt === UPLOAD_OPTION) setLogoMode(true);
+                else commit(opt);
+              }}
               className="w-full text-left rounded-lg border border-edge bg-panel hover:border-accent/60 px-3.5 py-2.5 text-sm transition"
             >
               {opt}
@@ -149,6 +191,94 @@ export default function Interview({ interview, onComplete }) {
             <button
               type="button"
               onClick={() => setCustomMode(false)}
+              className="rounded-lg border border-edge text-sm text-zinc-400 px-4 py-2 hover:text-zinc-200 transition"
+            >
+              Back
+            </button>
+          </div>
+        </div>
+      )}
+
+      {isLogoStep && logoMode && (
+        <div className="space-y-3 rounded-lg border border-edge bg-panel p-3">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={LOGO_ACCEPT}
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) handleLogoFile(f);
+              e.target.value = ""; // allow re-selecting the same file
+            }}
+          />
+
+          {!logoPreview ? (
+            <div
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOver(false);
+                const f = e.dataTransfer.files?.[0];
+                if (f) handleLogoFile(f);
+              }}
+              className={`flex flex-col items-center justify-center gap-1 rounded-lg border border-dashed px-4 py-8 text-center cursor-pointer transition ${
+                dragOver ? "border-accent bg-accent/10" : "border-edge hover:border-accent/60"
+              }`}
+            >
+              <span className="text-sm text-zinc-300">
+                {logoBusy ? "Uploading…" : "Drop a logo here or click to choose"}
+              </span>
+              <span className="text-xs text-zinc-500">PNG, JPG, or WebP — up to 5MB</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-3">
+              <div className="h-16 w-16 shrink-0 rounded-lg border border-edge bg-ink flex items-center justify-center overflow-hidden">
+                <img src={logoPreview} alt="Logo preview" className="max-h-full max-w-full object-contain" />
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={logoBusy}
+                  className="rounded-lg border border-edge text-sm text-zinc-300 px-3 py-1.5 hover:text-zinc-100 hover:border-accent/60 transition disabled:opacity-40"
+                >
+                  Replace
+                </button>
+                <button
+                  type="button"
+                  onClick={removeLogo}
+                  disabled={logoBusy}
+                  className="rounded-lg border border-edge text-sm text-zinc-400 px-3 py-1.5 hover:text-zinc-200 transition disabled:opacity-40"
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          )}
+
+          {logoError && <div className="text-xs text-red-400">{logoError}</div>}
+
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => commit("uploaded")}
+              disabled={logoBusy || !logoPreview}
+              className="rounded-lg bg-accent text-ink text-sm font-medium px-4 py-2 disabled:opacity-40 hover:brightness-110 transition"
+            >
+              Use this logo →
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setLogoMode(false);
+                setLogoError("");
+              }}
               className="rounded-lg border border-edge text-sm text-zinc-400 px-4 py-2 hover:text-zinc-200 transition"
             >
               Back

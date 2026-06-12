@@ -15,7 +15,27 @@ export const api = {
   createProject: (payload) => req("POST", "/api/projects", payload),
   recommendStack: (id, answers) =>
     req("POST", `/api/projects/${id}/recommend-stack`, { answers }),
+  deleteLogo: (id) => req("DELETE", `/api/projects/${id}/logo`),
+  deleteProject: (id, deleteFiles) =>
+    req("DELETE", `/api/projects/${id}`, { deleteFiles }),
 };
+
+/**
+ * Upload a logo file via multipart/form-data. We deliberately do NOT set the
+ * Content-Type header — the browser sets it with the correct multipart boundary.
+ *
+ * @param {string} projectId
+ * @param {File} file
+ * @returns {Promise<{ logo_path: string, previewUrl: string }>}
+ */
+export async function uploadLogo(projectId, file) {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`/api/projects/${projectId}/logo`, { method: "POST", body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Logo upload failed (${res.status})`);
+  return data;
+}
 
 /**
  * Stream a generation/iteration via SSE using fetch + a manual parser

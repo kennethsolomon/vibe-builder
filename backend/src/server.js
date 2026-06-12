@@ -4,6 +4,7 @@ import path from "node:path";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
+import fastifyMultipart from "@fastify/multipart";
 
 import { PORT, HOST, GENERATED_ROOT } from "./config.js";
 import {
@@ -12,6 +13,7 @@ import {
   getProjectBySlug,
   listProjects,
   updateProject,
+  deleteProject,
 } from "./db.js";
 import {
   toSlug,
@@ -20,8 +22,10 @@ import {
   normalizeProjectType,
   normalizeStack,
   validateHexPalette,
+  validateLogoUpload,
   requireString,
   ValidationError,
+  LOGO_MAX_BYTES,
 } from "./validate.js";
 import { buildInterview } from "./interview.js";
 import { buildGenerationPrompt, buildIterationPrompt } from "./prompt.js";
@@ -40,6 +44,12 @@ const app = Fastify({ logger: { level: "info" } });
 // Local single-user tool: only the Vite dev origin and same-origin need access.
 await app.register(cors, {
   origin: [/^http:\/\/(127\.0\.0\.1|localhost):\d+$/],
+});
+
+// Logo upload: cap file size at the multipart layer (defence in depth — the
+// buffer is re-checked against LOGO_MAX_BYTES after assembly), one file only.
+await app.register(fastifyMultipart, {
+  limits: { fileSize: LOGO_MAX_BYTES, files: 1, fields: 0 },
 });
 
 // ---- Static serving of generated sites for the live-preview iframe ----------
@@ -83,6 +93,73 @@ app.get("/api/projects/:id", async (req, reply) => {
   return { project, hasIndex };
 });
 
+// ---- Logo upload -------------------------------------------------------------
+// Multipart. Stores the file at generated/<slug>/assets/logo.<ext> (already
+// served by @fastify/static) and persists the relative path on the project.
+// The type is decided by magic-byte sniffing in validateLogoUpload — the client
+// filename and mimetype are never trusted (path-traversal / forged-extension).
+app.post("/api/projects/:id/logo", async (req, reply) => {
+  const project = getProject(req.params.id);
+  if (!project) return reply.code(404).send({ error: "Project not found" });
+
+  const data = await req.file();
+  if (!data) return reply.code(400).send({ error: "No file provided" });
+
+  let buffer;
+  try {
+    buffer = await data.toBuffer();
+  } catch (err) {
+    // @fastify/multipart throws when the fileSize limit is exceeded mid-stream.
+    if (err.code === "FST_REQ_FILE_TOO_LARGE" || data.file?.truncated) {
+      return reply.code(413).send({ error: "Logo exceeds 5MB limit" });
+    }
+    throw err;
+  }
+  if (data.file?.truncated) {
+    return reply.code(413).send({ error: "Logo exceeds 5MB limit" });
+  }
+
+  const { ext } = validateLogoUpload(buffer); // throws ValidationError (400) on bad type/XSS
+
+  const assetsDir = path.join(projectDir(project.slug), "assets");
+  fs.mkdirSync(assetsDir, { recursive: true });
+
+  // Replace any prior logo of a different extension so we never leave both
+  // logo.png and logo.svg behind.
+  for (const stale of ["png", "jpg", "svg", "webp"]) {
+    if (stale === ext) continue;
+    const p = path.join(assetsDir, `logo.${stale}`);
+    if (fs.existsSync(p)) fs.rmSync(p);
+  }
+
+  const filename = `logo.${ext}`;
+  fs.writeFileSync(path.join(assetsDir, filename), buffer);
+
+  const logoPath = `assets/${filename}`;
+  const refreshed = getProject(project.id);
+  updateProject({ ...refreshed, logo_path: logoPath, updated_at: nowIso() });
+
+  return {
+    logo_path: logoPath,
+    previewUrl: `/preview/${project.slug}/${logoPath}`,
+  };
+});
+
+// ---- Logo delete (fall back to placeholder wordmark) -------------------------
+app.delete("/api/projects/:id/logo", async (req, reply) => {
+  const project = getProject(req.params.id);
+  if (!project) return reply.code(404).send({ error: "Project not found" });
+
+  const assetsDir = path.join(projectDir(project.slug), "assets");
+  for (const ext of ["png", "jpg", "svg", "webp"]) {
+    const p = path.join(assetsDir, `logo.${ext}`);
+    if (fs.existsSync(p)) fs.rmSync(p);
+  }
+
+  updateProject({ ...project, logo_path: null, updated_at: nowIso() });
+  return { logo_path: null };
+});
+
 // ---- Create project + return interview ---------------------------------------
 app.post("/api/projects", async (req, reply) => {
   const name = requireString(req.body?.name, "name", { max: 120 });
@@ -108,11 +185,65 @@ app.post("/api/projects", async (req, reply) => {
     project_type: projectType,
     custom_palette: null,
     stack: null,
+    logo_path: null,
     created_at: nowIso(),
     updated_at: nowIso(),
   });
 
   return reply.code(201).send({ project, interview: buildInterview(niche) });
+});
+
+// ---- Delete a project --------------------------------------------------------
+// DELETE /api/projects/:id   body: { deleteFiles?: boolean }
+//
+// This is an rm -rf primitive, so every guard matters:
+//  - refuse while a generation is in-flight for this project (reuse the lock);
+//  - the slug is re-validated by projectDir() (charset-only path component);
+//  - if deleteFiles, the target is resolved with realpathSync (defeats symlink
+//    escape) and verified to live STRICTLY inside the real GENERATED_ROOT before
+//    a single byte is removed. Anything outside → 400, no deletion.
+app.delete("/api/projects/:id", async (req, reply) => {
+  const project = getProject(req.params.id);
+  if (!project) return reply.code(404).send({ error: "Project not found" });
+
+  if (inFlight.has(project.id)) {
+    return reply
+      .code(409)
+      .send({ error: "A generation is running for this project — stop it before deleting" });
+  }
+
+  const deleteFiles = req.body?.deleteFiles === true;
+
+  if (deleteFiles) {
+    // projectDir() re-validates the slug and confirms the *string* path stays
+    // under GENERATED_ROOT. Now also defeat symlink escape on the real FS.
+    const dir = projectDir(project.slug);
+    if (fs.existsSync(dir)) {
+      const realRoot = fs.realpathSync(GENERATED_ROOT);
+      let realDir;
+      try {
+        realDir = fs.realpathSync(dir);
+      } catch {
+        realDir = null;
+      }
+      // The resolved target must be a real subdirectory of the resolved root —
+      // never the root itself, never a symlink pointing elsewhere.
+      if (
+        realDir &&
+        realDir !== realRoot &&
+        realDir.startsWith(realRoot + path.sep)
+      ) {
+        fs.rmSync(realDir, { recursive: true, force: true });
+      } else {
+        return reply
+          .code(400)
+          .send({ error: "Refusing to delete: project path escapes the generated root" });
+      }
+    }
+  }
+
+  deleteProject(project.id);
+  return { id: project.id, deletedFiles: deleteFiles };
 });
 
 // ---- Stack recommendation (production-app mode) ------------------------------

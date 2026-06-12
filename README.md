@@ -153,6 +153,46 @@ entry must match `^#?([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$`, max 12 colors; anything
 else is rejected with a 400) and then injected **verbatim** into the generation
 prompt as a `MANDATORY COLOR SYSTEM` block that overrides the niche palette.
 
+## Logo upload
+
+The interview's logo step accepts a real image instead of only a text wordmark:
+
+- **File picker + drag-and-drop** with a thumbnail preview, plus **Replace** /
+  **Remove**. The **"use a placeholder"** wordmark option is still there — removing
+  a logo falls back to it.
+- **Accepted:** PNG, JPG, WebP, **5MB cap**.
+- **Validated by magic bytes, not the client-declared mimetype or filename** —
+  both are attacker-controlled. A forged extension (e.g. SVG/script bytes named
+  `logo.png`) is rejected.
+- **SVG is rejected outright.** An SVG is an executable document — served as a
+  top-level page or embedded as anything other than `<img>` it would run scripts
+  in the preview origin, and a finite blocklist can't reliably catch every vector
+  (`<\tscript>`, namespaced handlers, `<use href="data:">`, CSS `@import`…). For a
+  raster-logo use case the safe stance is to not accept the format.
+- Stored under `generated/<slug>/assets/logo.<ext>` with a **server-generated
+  filename** (the upload filename is never used → no path traversal), persisted to
+  the `logo_path` column so iteration sessions keep referencing it, and served at
+  `/preview/<slug>/assets/logo.<ext>`. The generation prompt tells the child the
+  logo's relative path in both static and app modes.
+
+## Deleting projects
+
+Each project row in the sidebar has a hover **trash icon** that opens a
+confirmation modal with two distinct choices (plus Cancel):
+
+- **Remove from list only** — deletes the SQLite project record, **keeps**
+  `generated/<slug>/` on disk.
+- **Delete files too** (styled red / destructive) — deletes the record **and**
+  the generated folder, including any uploaded logo assets.
+
+Backend safety on `DELETE /api/projects/:id` (`{ deleteFiles }`): the slug is
+re-validated (charset-only path component); when deleting files the target is
+resolved with `realpathSync` and must be a **real subdirectory strictly inside**
+`generated/` before a single byte is removed (defeats path traversal **and**
+symlink escape — never the root itself); and deletion is **refused with 409 while
+a generation is in flight** for that project (reuses the concurrency lock).
+Deleting the currently-open project returns the UI to the new-site state.
+
 ## Architecture
 
 ```

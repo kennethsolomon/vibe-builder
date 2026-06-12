@@ -1,0 +1,11 @@
+node_modules/
+backend/vibe-builder.db
+backend/vibe-builder.db-*
+generated/*
+!generated/.gitkeep
+frontend/dist/
+dist/
+.env
+.env.*
+.DS_Store
+*.log
